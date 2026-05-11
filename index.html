@@ -139,6 +139,10 @@
                     <input type="checkbox" id="convert-to-tw" checked>
                     <span>將簡體中文轉換為繁體中文</span>
                 </label>
+                <label class="option-item" style="margin-top: 10px;">
+                    <input type="checkbox" id="include-images" checked>
+                    <span>嘗試提取圖片 (實驗性)</span>
+                </label>
             </div>
 
             <div id="status-area" class="status-area">
@@ -161,7 +165,7 @@
         </div>
 
         <footer>
-            <p>© 2026 PDF-to-Doc · 檔案僅在您的裝置處理 · 安全無憂</p>
+            <p>© 2026 PDF-to-Doc · 圖片提取功能目前僅支援部分 PDF 格式</p>
         </footer>
     </div>
 
@@ -214,8 +218,9 @@
                 const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
                 const numPages = pdf.numPages;
                 
-                let fullText = '<html><body>';
+                let fullHtml = '<html><body>';
                 const shouldConvert = document.getElementById('convert-to-tw').checked;
+                const includeImages = document.getElementById('include-images').checked;
                 const converter = shouldConvert ? OpenCC.Converter({ from: 'cn', to: 'tw' }) : null;
 
                 for (let i = 1; i <= numPages; i++) {
@@ -223,8 +228,38 @@
                     updateStatus(`正在解析第 ${i} 頁 / 共 ${numPages} 頁...`, progress);
 
                     const page = await pdf.getPage(i);
-                    const textContent = await page.getTextContent();
                     
+                    // Extract Images if enabled
+                    let pageImagesHtml = '';
+                    if (includeImages) {
+                        try {
+                            const ops = await page.getOperatorList();
+                            for (let j = 0; j < ops.fnArray.length; j++) {
+                                if (ops.fnArray[j] === pdfjsLib.OPS.paintImageXObject) {
+                                    const imgKey = ops.argsArray[j][0];
+                                    const img = await page.objs.get(imgKey);
+                                    if (img && img.data) {
+                                        const canvas = document.createElement('canvas');
+                                        canvas.width = img.width;
+                                        canvas.height = img.height;
+                                        const ctx = canvas.getContext('2d');
+                                        const imgData = ctx.createImageData(img.width, img.height);
+                                        
+                                        // Simple RGB/RGBA copy
+                                        for (let k = 0; k < img.data.length; k++) {
+                                            imgData.data[k] = img.data[k];
+                                        }
+                                        ctx.putImageData(imgData, 0, 0);
+                                        const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+                                        pageImagesHtml += `<div style="text-align:center;"><img src="${dataUrl}" style="max-width:100%; height:auto;" /></div><br/>`;
+                                    }
+                                }
+                            }
+                        } catch (e) { console.warn('Image extraction failed for page', i, e); }
+                    }
+
+                    // Extract Text
+                    const textContent = await page.getTextContent();
                     let pageText = '';
                     let lastY;
                     for (const item of textContent.items) {
@@ -239,13 +274,13 @@
                         pageText = converter(pageText);
                     }
                     
-                    fullText += `<p>${pageText}</p><br/>`;
+                    fullHtml += `<div>${pageText}</div><br/>${pageImagesHtml}<hr/>`;
                 }
 
-                fullText += '</body></html>';
+                fullHtml += '</body></html>';
                 updateStatus('正在生成 Word 檔案...', 95);
 
-                const converted = htmlDocx.asBlob(fullText);
+                const converted = htmlDocx.asBlob(fullHtml);
                 finalBlob = converted;
 
                 updateStatus('完成！', 100);
@@ -259,7 +294,7 @@
 
             } catch (err) {
                 console.error(err);
-                alert('轉換失敗，這可能是一個受保護或內容格式複雜的 PDF。');
+                alert('轉換失敗，請確認 PDF 檔案是否正確。');
                 reset();
             }
         };
